@@ -26,6 +26,11 @@
 // door_state: -1 = desconocido, 0 = cerrada, 1 = abierta
 void ota_set_device_metrics(float temp_c, float humidity_pct, int battery_pct, int door_state);
 
+// Ensure RESET_BUTTON_PIN is defined (some toolchains may not include config.h early)
+#ifndef RESET_BUTTON_PIN
+#define RESET_BUTTON_PIN PRG_BUTTON_PIN
+#endif
+
 //  Librerias necesarias para el funcionamiento del módulo
 #include <Wire.h>
 #include <esp_system.h>
