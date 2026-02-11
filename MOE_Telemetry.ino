@@ -97,6 +97,20 @@ void setup()
   init_sensors();
   init_button_detector(); // Inicializar detector de botones
 
+  // Detectar presión prolongada del botón PRG para entrar en modo AP/OTA
+  if (digitalRead(PRG_BUTTON_PIN) == LOW) {
+    unsigned long startPress = millis();
+    while (digitalRead(PRG_BUTTON_PIN) == LOW && (millis() - startPress) < 3000) {
+      delay(10);
+    }
+    if ((millis() - startPress) >= 1500) {
+      Serial.println("[SETUP] PRG long-press detectado: entrando en modo AP/OTA...");
+      // Start AP configuration portal (blocking)
+      start_config_ap();
+      // start_config_ap loops indefinitely until restart, so nothing after will run
+    }
+  }
+
   // Conectar WiFi para OTA y sincronización
   Serial.println("[SETUP] Conectando WiFi...");
   display_oled_message_3_line(
@@ -141,10 +155,11 @@ void setup()
   else
   {
     Serial.println("[SETUP] ✗ Error: WiFi no disponible (status: " + String(WiFi.status()) + ")");
+    // Indicar que está en modo sin conexión
     display_oled_message_3_line(
       "v" + String(FIRMWARE_VERSION),
-      "WiFi no",
-      "disponible"
+      "Modo sin",
+      "conexión"
     );
     delay(1500);
   }

@@ -148,13 +148,12 @@ void start_config_ap()
   IPAddress apIP = WiFi.softAPIP();
   Serial.print("[WIFI] AP iniciado. SSID: "); Serial.println(apSSID);
   Serial.print("[WIFI] IP AP: "); Serial.println(apIP.toString());
-
-  // Mostrar IP del portal en pantalla para que el usuario la vea
-  // Mostrar SSID del AP en pantalla (incluye sufijo MAC)
+  // Mostrar únicamente SSID, IP y MAC en pantalla durante modo AP
+  String macAddr = WiFi.macAddress();
   display_oled_message_3_line(
-    "AP Config:",
     apSSID,
-    "Abre navegador"
+    apIP.toString(),
+    macAddr
   );
 
   // Iniciar servidor DNS para captive portal: redirigir todas las consultas al AP IP
