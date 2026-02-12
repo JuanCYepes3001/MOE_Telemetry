@@ -24,10 +24,10 @@
 #define Vext                GPIO_NUM_36                     //  Pin de control de alimentación para pantalla OLED
 
 // Definición de versión del firmware
-#define FIRMWARE_VERSION "1.1.0"                            //  Versión del firmware
+#define FIRMWARE_VERSION "1.2.0"                            //  Versión del firmware
 
 // Definición de constantes de tiempo
-extern const uint16_t Deep_Sleep_Time_S;                    //  Tiempo de duración del DeepSleep en segundos
+extern uint16_t Deep_Sleep_Time_S;                    //  Tiempo de duración del DeepSleep en segundos
 extern uint64_t Deep_Sleep_time_uS;                         //  Tiempo de duración del DeepSleep en microsegundos
 
 // Nuevas constantes para optimización de energía

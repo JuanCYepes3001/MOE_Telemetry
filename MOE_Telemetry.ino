@@ -64,6 +64,25 @@ uint8_t loadModeFromNVS(uint8_t defaultMode)
   return m;
 }
 
+// Detección robusta de long-press: detecta estado opuesto al inicial sostenido durante ms
+bool isButtonLongPressed(int pin, unsigned long ms)
+{
+  int initial = digitalRead(pin);
+  unsigned long start = millis();
+  // esperar hasta que el pin cambie de estado
+  while (digitalRead(pin) == initial && (millis() - start) < 2000) {
+    delay(10);
+  }
+  // Si no cambió en 2s, no hay pulsación sostenida
+  if (digitalRead(pin) == initial) return false;
+  // Ahora esperar que el estado opuesto se mantenga durante ms
+  unsigned long t0 = millis();
+  while (digitalRead(pin) != initial && (millis() - t0) < ms) {
+    delay(10);
+  }
+  return (digitalRead(pin) != initial) ? false : ((millis() - t0) >= ms);
+}
+
 //  Esta función contiene toda la lógica de funcionamiento del modulo y los diferentes sensores utilizados
 void setup()
 {
@@ -102,18 +121,13 @@ void setup()
   init_sensors();
   init_button_detector(); // Inicializar detector de botones
 
-  // Detectar presión prolongada del botón PRG para entrar en modo AP/OTA
-  if (digitalRead(PRG_BUTTON_PIN) == LOW) {
-    unsigned long startPress = millis();
-    while (digitalRead(PRG_BUTTON_PIN) == LOW && (millis() - startPress) < 3000) {
-      delay(10);
-    }
-    if ((millis() - startPress) >= 1500) {
-      Serial.println("[SETUP] PRG long-press detectado: entrando en modo AP/OTA...");
-      // Start AP configuration portal (blocking)
-      start_config_ap();
-      // start_config_ap loops indefinitely until restart, so nothing after will run
-    }
+  // Detectar presión prolongada del botón PRG para entrar en modo AP/OTA (10s requerido)
+  if (isButtonLongPressed(PRG_BUTTON_PIN, 10000)) {
+    Serial.println("[SETUP] PRG long-press detectado: entrando en modo AP/OTA...");
+    display_oled_message_3_line("Entrando en", "modo AP/OTA", "Espere...");
+    // Start AP configuration portal (blocking)
+    start_config_ap();
+    // start_config_ap loops indefinitely until restart, so nothing after will run
   }
 
   // Conectar WiFi para OTA y sincronización

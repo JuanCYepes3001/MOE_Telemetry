@@ -35,9 +35,9 @@ void set_wifi_connection()
   const unsigned long timeout = WIFI_TIMEOUT_MS;
 
   display_oled_message_3_line(
-    "Conectando a", 
-    "la red Wi-Fi", 
-    String(ssid)
+    "Conectando a",
+    "la red Wi-Fi",
+    stored_ssid
   );
 
   while (WiFi.status() != WL_CONNECTED && (millis() - startAttemptTime) < timeout)
@@ -70,13 +70,27 @@ void set_wifi_connection()
 }
 
 // Cargar credenciales desde Preferences. Retorna true si existen y no están vacías.
+// Cargar credenciales desde Preferences. Retorna true si existen y no están vacías.
+// Además soporta la bandera "force_ap" que puede establecer OTA para forzar
+// entrar en modo AP en el siguiente reinicio (por ejemplo después de un flash).
 bool load_wifi_credentials(String &out_ssid, String &out_password)
 {
   Preferences prefs;
-  prefs.begin(PREF_NS, true);
+  prefs.begin(PREF_NS, true); // read-only para leer ssid/pass y flag
   String s = prefs.getString("ssid", "");
   String p = prefs.getString("pass", "");
+  bool force_ap = prefs.getBool("force_ap", false);
   prefs.end();
+
+  if (force_ap) {
+    // Clear flag and force AP by returning false
+    Preferences prefs2;
+    prefs2.begin(PREF_NS, false);
+    prefs2.remove("force_ap");
+    prefs2.end();
+    Serial.println("[WIFI] force_ap flag detected -> starting AP and clearing flag");
+    return false;
+  }
 
   if (s.length() == 0) return false;
   out_ssid = s;
@@ -91,6 +105,8 @@ void save_wifi_credentials(const char* ssid, const char* password)
   prefs.begin(PREF_NS, false);
   prefs.putString("ssid", String(ssid));
   prefs.putString("pass", String(password));
+  // Ensure we don't keep force_ap after saving credentials
+  prefs.remove("force_ap");
   prefs.end();
 }
 
@@ -150,11 +166,8 @@ void start_config_ap()
   Serial.print("[WIFI] IP AP: "); Serial.println(apIP.toString());
   // Mostrar únicamente SSID, IP y MAC en pantalla durante modo AP
   String macAddr = WiFi.macAddress();
-  display_oled_message_3_line(
-    apSSID,
-    apIP.toString(),
-    macAddr
-  );
+  // Use specialized AP display for better readability
+  display_oled_ap_info(apSSID, apIP.toString(), macAddr);
 
   // Iniciar servidor DNS para captive portal: redirigir todas las consultas al AP IP
   static DNSServer dnsServer;
@@ -323,10 +336,11 @@ void start_config_ap()
     apServer.send(200, "text/html", pageStr);
   });
 
-  // Captive portal behavior: redirigir cualquier request a la raíz para forzar la apertura de la página
+  // Captive portal behavior: servir una página simple para cualquier request
+  // Esto ayuda a clientes que no siguen 302/Location o usan HTTPS para comprobaciones.
   apServer.onNotFound([&]() {
-    apServer.sendHeader("Location", String("http://") + apIP.toString());
-    apServer.send(302, "text/plain", "");
+    String fallback = "<html><head><meta http-equiv=\"refresh\" content=\"0;url=http://" + apIP.toString() + "\"></head><body>Red de configuracion MOE - <a href=\"http://" + apIP.toString() + "\">Abrir configuracion</a></body></html>";
+    apServer.send(200, "text/html", fallback);
   });
 
   // Save handler

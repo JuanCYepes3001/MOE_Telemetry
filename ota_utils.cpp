@@ -67,7 +67,7 @@ static size_t base64_decode(const char* src, uint8_t* out) {
 }
 
 // HTML embebido para la interfaz OTA (modificado: añadida sección de Device Info y fetch a /update/device_info)
-const char* ota_html = R"(
+const char* ota_html = R"rawliteral(
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -600,6 +600,12 @@ const char* ota_html = R"(
           <div id="fileName"></div>
         </div>
 
+        <div style="margin-top:18px;">
+          <label for="intervalSelect" style="display:block;margin-bottom:6px;font-weight:700;color:rgba(255,255,255,0.9)">Intervalo modo Normal (minutos)</label>
+          <select id="intervalSelect" style="width:100%;padding:10px;border-radius:8px;background:#1e1e1e;border:1px solid rgba(255,255,255,0.04);color:#fff">
+          </select>
+        </div>
+
         <!-- Logo upload removed: using LittleFS /logo.png or embedded image fallback -->
       
       <div class="button-group">
@@ -650,6 +656,7 @@ const char* ota_html = R"(
     const deviceRSSI = document.getElementById('deviceRSSI');
     const batterySwitch = document.getElementById('batterySwitch');
     const batterySwitchWrap = document.getElementById('batterySwitchWrap');
+    const intervalSelect = document.getElementById('intervalSelect');
     // continuousNote removed
     // logo upload controls removed
 
@@ -708,38 +715,83 @@ const char* ota_html = R"(
       fetch('/update/mode')
         .then(r => r.json())
         .then(m => {
-          // UI mapping: switch ON -> continuous mode
-          batterySwitch.checked = !!m.continuous;
-          if (batterySwitch.checked) batterySwitchWrap.classList.add('checked'); else batterySwitchWrap.classList.remove('checked');
+          // UI mapping: switch ON -> Normal mode enabled
+          batterySwitch.checked = !!m.normal;
+          if (batterySwitch.checked) {
+            batterySwitchWrap.classList.add('checked');
+            // If Normal mode is active, disable switch and show note
+            batterySwitch.disabled = true;
+            batterySwitchWrap.style.opacity = '0.6';
+          } else {
+            batterySwitchWrap.classList.remove('checked');
+            batterySwitch.disabled = false;
+            batterySwitchWrap.style.opacity = '1';
+          }
         })
         .catch(err => { console.warn('fetchMode failed', err); });
     }
 
     batterySwitch.addEventListener('change', () => {
-      // UI mapping: switch ON -> continuous mode
-      const wantContinuous = !!batterySwitch.checked;
+      // UI mapping: switch ON -> request enabling Normal mode
+      const wantNormal = !!batterySwitch.checked;
       // update visual wrapper immediately for snappy UI
       if (batterySwitch.checked) batterySwitchWrap.classList.add('checked'); else batterySwitchWrap.classList.remove('checked');
-      fetch('/update/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ continuous: wantContinuous }) })
-        .then(r => {
-          if (!r.ok) return r.text().then(t => Promise.reject(t));
-          return r.json();
-        })
-        .then(j => {
-          // server responded with effective mode; update UI to match
-          batterySwitch.checked = !!j.continuous;
-          if (batterySwitch.checked) batterySwitchWrap.classList.add('checked'); else batterySwitchWrap.classList.remove('checked');
-        })
-        .catch(err => {
-          console.warn('set mode failed', err);
-          // Revert UI
+
+      if (wantNormal) {
+        if (!confirm('Activar MODO NORMAL: Esto deshabilitará ahorro y hará que el dispositivo entre en modo normal. Para volver a MODO CONTINUO será necesario un reinicio físico del dispositivo. ¿Continuar?')) {
           fetchMode();
-        });
+          return;
+        }
+        fetch('/update/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ normal: true }) })
+          .then(r => r.json())
+          .then(j => {
+            // After setting Normal, disable switch (revert requires physical reset)
+            batterySwitch.checked = !!j.normal;
+            batterySwitch.disabled = true;
+            batterySwitchWrap.style.opacity = '0.6';
+            alert('Modo Normal activado. Para volver a Modo Continuo reinicie físicamente el dispositivo.');
+          })
+          .catch(err => { console.warn('set mode failed', err); fetchMode(); });
+      } else {
+        // Trying to unset via OTA is not allowed: refresh state and inform
+        alert('La reversión a Modo Continuo no está permitida desde OTA. Por favor realice un reinicio físico para volver a Modo Continuo.');
+        fetchMode();
+      }
     });
 
     // Inicializar datos y refrescar periódicamente
     fetchDeviceInfo();
     setInterval(fetchDeviceInfo, 5000);
+
+    // Interval select: poblar opciones y sincronizar con servidor
+    function populateIntervalOptions() {
+      intervalSelect.innerHTML = '';
+      for (let i = 1; i <= 10; i++) {
+        const opt = document.createElement('option'); opt.value = i; opt.textContent = `${i} minuto${i>1? 's':''}`; intervalSelect.appendChild(opt);
+      }
+      for (let t = 20; t <= 60; t += 10) {
+        const opt = document.createElement('option'); opt.value = t; opt.textContent = `${t} minutos`; intervalSelect.appendChild(opt);
+      }
+    }
+
+    function fetchInterval() {
+      fetch('/update/interval').then(r=>r.json()).then(j=>{
+        if (j.interval) {
+          intervalSelect.value = j.interval;
+        }
+      }).catch(()=>{});
+    }
+
+    intervalSelect.addEventListener('change', ()=>{
+      const v = parseInt(intervalSelect.value);
+      fetch('/update/interval', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ interval: v }) })
+        .then(r => r.json()).then(j => {
+          // success
+        }).catch(()=>{ alert('Error guardando intervalo'); });
+    });
+
+    populateIntervalOptions();
+    fetchInterval();
 
     // Factory reset desde UI OTA (footer) con confirmación modal ligera
     factoryBtn.addEventListener('click', () => {
@@ -908,7 +960,7 @@ const char* ota_html = R"(
   </script>
 </body>
 </html>
-)";
+)rawliteral";
 
 // Tarea FreeRTOS para manejar OTA en paralelo (implementación propia sin ElegantOTA)
 void ota_background_task(void *parameter)
@@ -1090,9 +1142,15 @@ void ota_background_task(void *parameter)
       Serial.println("[OTA] Resultado: FALLÓ");
       server.send(500, "text/plain", "FAIL");
     } else {
+      // Antes de reiniciar, establecer flag para forzar AP en próximo arranque
+      Preferences p;
+      p.begin("moe_wifi", false);
+      p.putBool("force_ap", true);
+      p.end();
+
       server.sendHeader("Connection", "close");
       server.send(200, "text/plain", "OK");
-      Serial.println("[OTA] Actualización completada con éxito, reiniciando...");
+      Serial.println("[OTA] Actualización completada con éxito, marcando force_ap y reiniciando...");
       delay(100);
       ESP.restart();
     }
@@ -1126,6 +1184,74 @@ void ota_background_task(void *parameter)
     server.send(200, "text/plain", "OK");
     delay(200);
     ESP.restart();
+  });
+
+  // GET/POST /update/interval -> consulta y cambia intervalo en minutos (persistente en moe_cfg)
+  server.on("/update/interval", HTTP_GET, []() {
+    Preferences prefs;
+    prefs.begin("moe_cfg", true);
+    uint8_t interval = prefs.getUChar("interval_minutes", 10);
+    prefs.end();
+    String js = String("{\"interval\":") + String(interval) + String("}");
+    server.send(200, "application/json", js);
+  });
+
+  server.on("/update/interval", HTTP_POST, []() {
+    String body = server.arg("plain");
+    int idx = body.indexOf("interval");
+    int newInterval = -1;
+    if (idx >= 0) {
+      int colon = body.indexOf(':', idx);
+      if (colon >= 0) {
+        String v = body.substring(colon + 1);
+        v.trim();
+        newInterval = v.toInt();
+      }
+    }
+    if (newInterval <= 0) {
+      server.send(400, "application/json", "{\"error\":\"invalid interval\"}");
+      return;
+    }
+    Preferences prefs;
+    prefs.begin("moe_cfg", false);
+    prefs.putUChar("interval_minutes", (uint8_t)newInterval);
+    prefs.end();
+    String js = String("{\"interval\":") + String(newInterval) + String("}");
+    server.send(200, "application/json", js);
+  });
+
+  // GET/POST /update/mode -> consulta y cambia modo persistente (moe_cfg -> key 'mode')
+  server.on("/update/mode", HTTP_GET, []() {
+    Preferences prefs;
+    prefs.begin("moe_cfg", true);
+    uint8_t mode = prefs.getUChar("mode", MODE_CONTINUOUS);
+    prefs.end();
+    // Return normal=true if mode == MODE_NORMAL
+    String js = String("{\"normal\":") + (mode == MODE_NORMAL ? "true" : "false") + String("}");
+    server.send(200, "application/json", js);
+  });
+
+  server.on("/update/mode", HTTP_POST, []() {
+    String body = server.arg("plain");
+    bool wantNormal = (body.indexOf("true") >= 0) || (body.indexOf("1") >= 0 && body.indexOf("continuous") == -1);
+    // If client requests normal mode, persist 'mode' = MODE_NORMAL. If they request false, do not allow reverting via OTA
+    if (wantNormal) {
+      Preferences prefs;
+      prefs.begin("moe_cfg", false);
+      prefs.putUChar("mode", MODE_NORMAL);
+      prefs.end();
+      // Notify application via weak callback
+      ota_on_mode_changed(false);
+      server.send(200, "application/json", "{\"normal\":true}");
+    } else {
+      // Disallow reverting to continuous via OTA (require physical reset). Respond current state.
+      Preferences prefs;
+      prefs.begin("moe_cfg", true);
+      uint8_t mode = prefs.getUChar("mode", MODE_CONTINUOUS);
+      prefs.end();
+      String js = String("{\"normal\":") + (mode == MODE_NORMAL ? "true" : "false") + String("}");
+      server.send(200, "application/json", js);
+    }
   });
 
   // Iniciar servidor

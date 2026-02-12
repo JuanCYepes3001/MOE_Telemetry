@@ -6,6 +6,7 @@
 #include "ota_utils.h"
 #include <WiFi.h>
 #include <esp_sleep.h>
+#include <Preferences.h>
 
 
 //  Función que permite calcular el tiempo restante para que el módulo salga del DeepSleep
@@ -66,6 +67,15 @@ void configure_deep_sleep()
   esp_sleep_enable_ext0_wakeup(DOOR_SENSOR_PIN, 0);     //0 para despertar por estado LOW y 1 para despertar por estado HIGH
 
   //  Se configura el tiempo que el sensor va a dormir en el modo DeepSleep
+  // Leer intervalo persistente (en minutos) si está disponible en NVS
+  {
+    Preferences prefs;
+    prefs.begin("moe_cfg", true);
+    uint8_t minutes = prefs.getUChar("interval_minutes", 10);
+    prefs.end();
+    Deep_Sleep_Time_S = (uint16_t)minutes * 60;
+    Deep_Sleep_time_uS = (uint64_t)Deep_Sleep_Time_S * 1000000ULL;
+  }
   esp_sleep_enable_timer_wakeup(Deep_Sleep_time_uS);
 
   // Se configura los dominios de alimentación para máximo ahorro
@@ -76,9 +86,9 @@ void configure_deep_sleep()
 // Función para entrar en deep sleep
 void enter_deep_sleep()
 {
-  // If device is in continuous mode (persisted via OTA UI), skip sleeping
-  if (ota_is_continuous_mode()) {
-    Serial.println("[SLEEP] Continuous mode enabled - skipping sleep");
+  // If device is in continuous mode (persisted via NVS/RTC), skip sleeping
+  if (current_mode == MODE_CONTINUOUS) {
+    Serial.println("[SLEEP] Current mode is CONTINUOUS - skipping sleep");
     return;
   }
 

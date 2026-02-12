@@ -1,7 +1,7 @@
 #include "config.h"
 
-// Definición de constantes de tiempo
-const uint16_t Deep_Sleep_Time_S = 600;                                                 //  Tiempo de duración del DeepSleep en segundos
+// Definición de variables de tiempo (editable por OTA)
+uint16_t Deep_Sleep_Time_S = 600;                                                       //  Tiempo de duración del DeepSleep en segundos (por defecto 10min)
 uint64_t Deep_Sleep_time_uS = Deep_Sleep_Time_S * 1000000ULL;                           //  Tiempo de duración del DeepSleep en microsegundos
 
 // Reducir tiempo de display para ahorrar energía
@@ -11,8 +11,10 @@ const uint16_t WIFI_TIMEOUT_MS = 8000;                                          
 const float volt_div_factor = 5.0;                                                      //  Constante del divisor resistivo
 
 // Credenciales WiFi
-const char* ssid = "Ecosistema-FCV";                                                    //  Constante que contiene el SSID o nombre de la red WIFI
-const char* password = "3mpLoyed_*FcV";                                                 //  Constante que contiene el password de la red WIFI
+// Por seguridad y para forzar que la red se configure desde el AP,
+// no dejamos credenciales por defecto en la compilación.
+const char* ssid = "";                                                                 //  SSID vacío por defecto
+const char* password = "";                                                             //  Password vacío por defecto
 //const char* ssid = "MiTelefono";                                                      //  Constante que contiene el SSID o nombre de la red WIFI
 //const char* password = "12345670";                                                    //  Constante que contiene el password de la red WIFI
 

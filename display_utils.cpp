@@ -39,6 +39,25 @@ void display_oled_message_3_line(String line_1, String line_2, String line_3)
   oled_display.display();
 }
 
+// Mostrar información de AP: SSID, IP y MAC con fuente más pequeña y alineado a la izquierda
+void display_oled_ap_info(const String &ssid, const String &ip, const String &mac)
+{
+  oled_display.clear();
+  oled_display.setFont(ArialMT_Plain_10);
+  oled_display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+  // Truncar si es necesario para que encaje en 128px de ancho
+  String s1 = ssid;
+  if (s1.length() > 20) s1 = s1.substring(0, 20) + "...";
+  String s2 = "IP: " + ip;
+  String s3 = "MAC: " + mac;
+
+  oled_display.drawString(2, 6, s1);
+  oled_display.drawString(2, 26, s2);
+  oled_display.drawString(2, 46, s3);
+  oled_display.display();
+}
+
 //  Función que me permite imprimir mensajes a 2 líneas en la pantalla OLED integrada
 void display_oled_message_2_line(String line_1, String line_2) 
 {
