@@ -20,6 +20,8 @@ TaskHandle_t ota_task_handle = NULL;
 // Persistent preferences namespace and runtime flag for "continuous" mode
 static Preferences ota_prefs;
 static bool ota_continuous_mode = false;
+// Runtime flag reflecting mode changes requested via OTA (not persisted across reboot)
+static bool ota_runtime_normal = false;
 
 // Forward declaration: application may implement ota_on_mode_changed elsewhere
 void ota_on_mode_changed(bool continuous);
@@ -575,10 +577,16 @@ const char* ota_html = R"rawliteral(
     <div class="signature">Programa creado por: Ing. Juan Camilo Yepes</div>
     
     <div class="content">
+        <div style="margin-top:18px;margin-bottom:18px;">
+          <label for="intervalSelect" style="display:block;margin-bottom:6px;font-weight:700;color:rgba(255,255,255,0.9)">Tiempo entre cada envio de datos</label>
+          <select id="intervalSelect" style="width:100%;padding:10px;border-radius:8px;background:#1e1e1e;border:1px solid rgba(255,255,255,0.04);color:#fff">
+          </select>
+        </div>
+
       <div class="warning-box">
         ⚠️ <strong>Importante:</strong> No apagues el dispositivo durante la actualización. El proceso tarda entre 30-60 segundos.
       </div>
-      
+
       <div class="info-section">
         <h3>📋 Instrucciones</h3>
         <ol>
@@ -600,11 +608,7 @@ const char* ota_html = R"rawliteral(
           <div id="fileName"></div>
         </div>
 
-        <div style="margin-top:18px;">
-          <label for="intervalSelect" style="display:block;margin-bottom:6px;font-weight:700;color:rgba(255,255,255,0.9)">Intervalo modo Normal (minutos)</label>
-          <select id="intervalSelect" style="width:100%;padding:10px;border-radius:8px;background:#1e1e1e;border:1px solid rgba(255,255,255,0.04);color:#fff">
-          </select>
-        </div>
+        
 
         <!-- Logo upload removed: using LittleFS /logo.png or embedded image fallback -->
       
@@ -738,7 +742,7 @@ const char* ota_html = R"rawliteral(
       if (batterySwitch.checked) batterySwitchWrap.classList.add('checked'); else batterySwitchWrap.classList.remove('checked');
 
       if (wantNormal) {
-        if (!confirm('Activar MODO NORMAL: Esto deshabilitará ahorro y hará que el dispositivo entre en modo normal. Para volver a MODO CONTINUO será necesario un reinicio físico del dispositivo. ¿Continuar?')) {
+        if (!confirm('El dispositivo entrará en modo ahorro de energía. Para volver a modo continuo deberá hacerlo físicamente. ¿Continuar?')) {
           fetchMode();
           return;
         }
@@ -1103,37 +1107,7 @@ void ota_background_task(void *parameter)
     }
   });
 
-  // GET/POST /update/mode -> consulta y cambia modo continuo (persistente)
-  server.on("/update/mode", HTTP_GET, []() {
-    String js = String("{\"continuous\":") + (ota_continuous_mode ? "true" : "false") + "}";
-    server.send(200, "application/json", js);
-  });
-
-  server.on("/update/mode", HTTP_POST, []() {
-    String body = server.arg("plain");
-    Serial.printf("[OTA] POST /update/mode body: %s\n", body.c_str());
-    bool want = false;
-    bool parsed = false;
-    int idx = body.indexOf("continuous");
-    if (idx >= 0) {
-      int colon = body.indexOf(':', idx);
-      if (colon >= 0) {
-        String v = body.substring(colon + 1);
-        v.trim();
-        if (v.startsWith("true") || v.startsWith("1")) { want = true; parsed = true; }
-        else if (v.startsWith("false") || v.startsWith("0")) { want = false; parsed = true; }
-      }
-    }
-    if (!parsed) {
-      want = (body.indexOf("true") >= 0) || (body.indexOf("1") >= 0);
-    }
-
-    Serial.printf("[OTA] parsed wantContinuous=%s (battery_pct=%d)\n", want ? "true" : "false", ota_battery_pct);
-    // Accept any requested mode change from UI; persist and notify
-    ota_set_continuous_mode(want);
-    String resp = String("{\"continuous\":") + (ota_continuous_mode ? "true" : "false") + "}";
-    server.send(200, "application/json", resp);
-  });
+  
 
   // POST /update -> manejo de carga OTA usando Update API
   server.on("/update", HTTP_POST, []() {
@@ -1226,8 +1200,9 @@ void ota_background_task(void *parameter)
     prefs.begin("moe_cfg", true);
     uint8_t mode = prefs.getUChar("mode", MODE_CONTINUOUS);
     prefs.end();
-    // Return normal=true if mode == MODE_NORMAL
-    String js = String("{\"normal\":") + (mode == MODE_NORMAL ? "true" : "false") + String("}");
+    // If OTA runtime flag is set, prefer that (so UI reflects immediate change)
+    bool normal = ota_runtime_normal || (mode == MODE_NORMAL);
+    String js = String("{\"normal\":") + (normal ? "true" : "false") + String("}");
     server.send(200, "application/json", js);
   });
 
@@ -1236,21 +1211,14 @@ void ota_background_task(void *parameter)
     bool wantNormal = (body.indexOf("true") >= 0) || (body.indexOf("1") >= 0 && body.indexOf("continuous") == -1);
     // If client requests normal mode, persist 'mode' = MODE_NORMAL. If they request false, do not allow reverting via OTA
     if (wantNormal) {
-      Preferences prefs;
-      prefs.begin("moe_cfg", false);
-      prefs.putUChar("mode", MODE_NORMAL);
-      prefs.end();
-      // Notify application via weak callback
+      // Do NOT persist mode across reboots. Trigger immediate Normal-mode behavior
+      ota_runtime_normal = true;
       ota_on_mode_changed(false);
       server.send(200, "application/json", "{\"normal\":true}");
     } else {
-      // Disallow reverting to continuous via OTA (require physical reset). Respond current state.
-      Preferences prefs;
-      prefs.begin("moe_cfg", true);
-      uint8_t mode = prefs.getUChar("mode", MODE_CONTINUOUS);
-      prefs.end();
-      String js = String("{\"normal\":") + (mode == MODE_NORMAL ? "true" : "false") + String("}");
-      server.send(200, "application/json", js);
+      ota_runtime_normal = false;
+      ota_on_mode_changed(true);
+      server.send(200, "application/json", "{\"normal\":false}");
     }
   });
 

@@ -6,7 +6,11 @@
 #include "ota_utils.h"
 #include <WiFi.h>
 #include <esp_sleep.h>
+#include <esp_wifi.h>
 #include <Preferences.h>
+#ifdef CONFIG_BT_ENABLED
+#include "esp_bt.h"
+#endif
 
 
 //  Función que permite calcular el tiempo restante para que el módulo salga del DeepSleep
@@ -86,25 +90,33 @@ void configure_deep_sleep()
 // Función para entrar en deep sleep
 void enter_deep_sleep()
 {
-  // If device is in continuous mode (persisted via NVS/RTC), skip sleeping
+  // If device is in continuous mode, skip deep-sleep here
   if (current_mode == MODE_CONTINUOUS) {
-    Serial.println("[SLEEP] Current mode is CONTINUOUS - skipping sleep");
+    Serial.println("[SLEEP] Current mode is CONTINUOUS - skipping deep sleep");
     return;
   }
 
-  // Apagar la pantalla OLED antes de dormir
+  // Apagar la pantalla OLED completamente antes de dormir (corta Vext)
   VextOFF();
 
-  // Configurar pines no utilizados como INPUT con PULLUP para reducir corriente
-  // configure_unused_pins();
+  // Detener WiFi y driver para máximo ahorro
+  if (WiFi.isConnected()) {
+    WiFi.disconnect(true);
+  }
+  WiFi.mode(WIFI_OFF);
+  esp_wifi_stop();
+  esp_wifi_deinit();
+
+  // Deshabilitar Bluetooth controlador si está presente (silencioso si no está)
+#ifdef CONFIG_BT_ENABLED
+  esp_bt_controller_disable();
+#endif
 
   // Configurar wakeup sources and timer
   configure_deep_sleep();
 
-  // Do NOT disconnect WiFi: use light sleep so WiFi can remain available for OTA
-  Serial.println("[SLEEP] Entering light sleep (WiFi retained)");
-  esp_light_sleep_start();
-  Serial.println("[SLEEP] Woke from light sleep");
+  Serial.println("[SLEEP] Entering DEEP SLEEP (WiFi/Bluetooth off, display off)");
+  esp_deep_sleep_start();
 }
 
 // Strong implementation of ota_on_mode_changed to react when OTA UI changes mode
@@ -117,7 +129,9 @@ void ota_on_mode_changed(bool continuous)
     WiFi.setSleep(false);
     Serial.println("[SLEEP] Continuous mode: staying awake");
   } else {
-    // Enter sleep (light sleep) immediately
+    // Set runtime mode to NORMAL (do NOT persist across reboots) and enter deep-sleep cycle
+    current_mode = MODE_NORMAL;
+    Serial.println("[SLEEP] Switching to MODE_NORMAL (runtime only). Entering deep sleep cycle now.");
     enter_deep_sleep();
   }
 }

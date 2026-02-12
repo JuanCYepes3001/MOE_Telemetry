@@ -8,6 +8,10 @@
 // Funciones de conexión WiFi
 void set_wifi_connection();
 
+// Attempt to connect to WiFi using stored credentials but DO NOT start AP if none.
+// Returns true if connected (WL_CONNECTED), false otherwise.
+bool try_connect_wifi_no_ap();
+
 // Configuración y persistencia de credenciales WiFi
 bool load_wifi_credentials(String &out_ssid, String &out_password);
 void save_wifi_credentials(const char* ssid, const char* password);

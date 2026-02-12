@@ -1,6 +1,7 @@
 #include "wifi_utils.h"
 #include "config.h"
 #include "display_utils.h"
+#include "ota_utils.h"
 #include "esp_wifi.h"
 #include <Preferences.h>
 #include <WebServer.h>
@@ -18,6 +19,9 @@ static const char* CONFIG_AP_PASS = ""; // abierto por defecto
 //  Función que permite configurar y realizar la conexión a la red Wi-Fi
 void set_wifi_connection() 
 {
+  // Use the non-blocking try_connect_wifi_no_ap which will only start AP if explicitly needed
+  if (try_connect_wifi_no_ap()) return;
+
   // Intentar cargar credenciales guardadas en Preferences
   String stored_ssid, stored_pass;
   if (!load_wifi_credentials(stored_ssid, stored_pass)) {
@@ -148,6 +152,12 @@ void start_config_ap()
   Serial.println("[WIFI] Scan completo. Redes encontradas: " + String(n));
 
   // Iniciar AP para portal de configuración
+  // Stop OTA server if running to avoid port conflicts so AP portal on :80 is reachable
+  if (is_ota_active()) {
+    Serial.println("[WIFI] Deteniendo servidor OTA antes de iniciar AP para evitar conflicto de puertos...");
+    stop_ota_background();
+    delay(200);
+  }
   WiFi.mode(WIFI_AP);
   // Build AP SSID: prefix + last 4 hex digits of MAC
   String mac = WiFi.macAddress();
@@ -423,4 +433,56 @@ void disconnect_wifi()
   WiFi.mode(WIFI_OFF);                                                  //  Se garantiza que no se quede en modo STA o AP
   esp_wifi_stop();                                                      //  Se apaga el driver
   esp_wifi_deinit();                                                    //  Se deshabilita completamente el módulo WiFi
+}
+
+// Try to connect using stored credentials but DO NOT launch AP if none are present.
+// Returns true if connected, false otherwise.
+bool try_connect_wifi_no_ap()
+{
+  String stored_ssid, stored_pass;
+  if (!load_wifi_credentials(stored_ssid, stored_pass)) {
+    Serial.println("[WIFI] try_connect_wifi_no_ap: no credentials stored");
+    return false;
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(stored_ssid.c_str(), stored_pass.c_str());
+
+  unsigned long startAttemptTime = millis();
+  const unsigned long timeout = WIFI_TIMEOUT_MS;
+
+  display_oled_message_3_line(
+    "Conectando a",
+    "la red Wi-Fi",
+    stored_ssid
+  );
+
+  while (WiFi.status() != WL_CONNECTED && (millis() - startAttemptTime) < timeout)
+  {
+    delay(100);
+  }
+
+  // Configurar WiFi en modo de bajo consumo
+  esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    display_oled_message_3_line(
+      "Conexión",
+      "Wi-Fi",
+      "establecida"
+    );
+    delay(200);
+    return true;
+  }
+  else
+  {
+    display_oled_message_3_line(
+      "Error en",
+      "la conexión",
+      "Wi-Fi"
+    );
+    delay(200);
+    return false;
+  }
 }

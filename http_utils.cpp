@@ -50,9 +50,8 @@ void send_POST_temperature_humidity_battery(float temp, float hum, int volt_batt
   } 
   else 
   {
-    display_oled_message_2_line(
-      "Información no registrada.", 
-      ""
+    display_oled_wrap_message(
+      "Información no registrada."
     );
   }
 
@@ -101,9 +100,8 @@ void send_POST_door_status_battery(int door_status, int battery_vol, int battery
   } 
   else 
   {
-    display_oled_message_2_line(
-      "Información NO registrada.", 
-      ""
+    display_oled_wrap_message(
+      "Información NO registrada."
     );
   }
 

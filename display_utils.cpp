@@ -74,3 +74,40 @@ void display_oled_message_2_line(String line_1, String line_2)
 
   oled_display.display();
 }
+
+// Mostrar un mensaje largo dividiendo por palabras en hasta 3 líneas y adaptando fuente
+void display_oled_wrap_message(const String &msg)
+{
+  String s = msg;
+  String lines[3];
+  int lineIdx = 0;
+
+  while (s.length() > 0 && lineIdx < 3) {
+    int sp = s.indexOf(' ');
+    String word;
+    if (sp < 0) { word = s; s = ""; }
+    else { word = s.substring(0, sp); s = s.substring(sp + 1); }
+
+    if (lines[lineIdx].length() == 0) {
+      lines[lineIdx] = word;
+    } else {
+      // Try to append to current line if reasonable (max ~18 chars)
+      if (lines[lineIdx].length() + 1 + word.length() <= 18) {
+        lines[lineIdx] += " ";
+        lines[lineIdx] += word;
+      } else {
+        lineIdx++;
+        if (lineIdx < 3) lines[lineIdx] = word;
+      }
+    }
+  }
+
+  oled_display.clear();
+  oled_display.setFont(ArialMT_Plain_16);
+  oled_display.setTextAlignment(TEXT_ALIGN_CENTER);
+  int y0 = 6;
+  if (lines[0].length() > 0) oled_display.drawString(64, y0, lines[0]);
+  if (lines[1].length() > 0) oled_display.drawString(64, y0 + 20, lines[1]);
+  if (lines[2].length() > 0) oled_display.drawString(64, y0 + 40, lines[2]);
+  oled_display.display();
+}

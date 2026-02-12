@@ -16,5 +16,7 @@ void init_display();
 void display_oled_message_3_line(String line_1, String line_2, String line_3);
 void display_oled_message_2_line(String line_1, String line_2);
 void display_oled_ap_info(const String &ssid, const String &ip, const String &mac);
+// Mostrar un mensaje largo dividiendo por palabras en hasta 3 líneas y adaptando fuente
+void display_oled_wrap_message(const String &msg);
 
 #endif

@@ -117,84 +117,77 @@ void setup()
       }
       delay(10);
     }
+    // Si se pulsó brevemente (no llegó a 5s), forzar inicio en modo CONTINUO
+    unsigned long pressDuration = millis() - startPress;
+    if (pressDuration > 0 && pressDuration < 5000) {
+      Serial.println("[SETUP] RESET breve detectado: forzando MODO_CONTINUO persistente");
+      saveModeToNVS(MODE_CONTINUOUS);
+      current_mode = MODE_CONTINUOUS;
+      display_oled_message_3_line("Modo", "Forzado:", "Continuo");
+      delay(600);
+    }
   }
   init_sensors();
   init_button_detector(); // Inicializar detector de botones
 
-  // Detectar presión prolongada del botón PRG para entrar en modo AP/OTA (10s requerido)
-  if (isButtonLongPressed(PRG_BUTTON_PIN, 10000)) {
-    Serial.println("[SETUP] PRG long-press detectado: entrando en modo AP/OTA...");
+  // Detectar 6 pulsaciones seguidas del botón PRG para entrar en modo AP/OTA
+  // (reemplaza la detección de long-press que no funcionaba de forma fiable)
+  int presses_for_ap = countButtonPressesWithinWindow(6000); // 6s ventana para 6 pulsos
+    if (presses_for_ap >= 6) { 
+    Serial.println("[SETUP] PRG 6x press detected: entrando en modo AP/OTA...");
     display_oled_message_3_line("Entrando en", "modo AP/OTA", "Espere...");
     // Start AP configuration portal (blocking)
     start_config_ap();
     // start_config_ap loops indefinitely until restart, so nothing after will run
   }
 
-  // Conectar WiFi para OTA y sincronización
-  Serial.println("[SETUP] Conectando WiFi...");
-  display_oled_message_3_line(
-    "Conectando",
-    "a WiFi...",
-    ""
-  );
-  delay(500);
-
-  set_wifi_connection();
-
-  // Mostrar IP si la conexión fue exitosa
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    String ip_str = WiFi.localIP().toString();
-    Serial.println("[SETUP] ✓ WiFi conectado!");
-    Serial.println("[SETUP] IP: " + ip_str);
-    Serial.println("[SETUP] RSSI: " + String(WiFi.RSSI()) + " dBm");
-    Serial.println("[SETUP] OTA disponible en: http://" + ip_str);
-    
-    display_oled_message_3_line(
-      "v" + String(FIRMWARE_VERSION),
-      "IP: " + ip_str,
-      "OTA disponible"
-    );
-    delay(3000); // Mostrar IP durante 3 segundos
-
-    // Iniciar servidor OTA en background
-    Serial.println("[SETUP] Iniciando OTA en background...");
-    Serial.flush(); // Asegurar que se envíe antes de crear la tarea
-    
-    init_ota_background();
-    
-    // Esperar a que OTA se haya inicializado
-    delay(500);
-    if (is_ota_active()) {
-      Serial.println("[SETUP] ✓ OTA iniciado correctamente");
-    } else {
-      Serial.println("[SETUP] ✗ ERROR: OTA no se inició");
-    }
-  }
-  else
-  {
-    Serial.println("[SETUP] ✗ Error: WiFi no disponible (status: " + String(WiFi.status()) + ")");
-    // Indicar que está en modo sin conexión
-    display_oled_message_3_line(
-      "v" + String(FIRMWARE_VERSION),
-      "Modo sin",
-      "conexión"
-    );
-    delay(1500);
-  }
+  // Nota: la conexión WiFi e inicialización OTA se realizan más adelante
+  // sólo si el dispositivo permanece en modo CONTINUOUS (ver abajo).
 
   //  Se determina el motivo por el cual el módulo despertó del DeepSleep
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
 
-  // Cargar modo persistente desde NVS (primera acción)
-  current_mode = loadModeFromNVS(current_mode);
+  // Nota: no forzar modo CONTINUO aquí para no romper el ciclo de DeepSleep.
+  // Sólo en arranque en frío (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED)
+  // se deberá forzar el modo CONTINUO si se desea reinicio físico.
 
 
   if (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED) 
   {
-    // Al arrancar en frio, usar modo persistente (por defecto: CONTINUO)
+    // Al arrancar en frio: forzar MODO_CONTINUO persistente (reinicio físico)
+    current_mode = MODE_CONTINUOUS;
+    saveModeToNVS(MODE_CONTINUOUS);
+
     if (current_mode == MODE_CONTINUOUS) 
     {
+      // Conectar WiFi y preparar OTA sólo en modo continuo
+      Serial.println("[SETUP] Conectando WiFi (modo Continuo)...");
+      display_oled_message_3_line("Conectando","a WiFi...","");
+      delay(500);
+      set_wifi_connection();
+
+      if (WiFi.status() == WL_CONNECTED)
+      {
+        String ip_str = WiFi.localIP().toString();
+        Serial.println("[SETUP] ✓ WiFi conectado!");
+        Serial.println("[SETUP] IP: " + ip_str);
+        Serial.println("[SETUP] RSSI: " + String(WiFi.RSSI()) + " dBm");
+        Serial.println("[SETUP] OTA disponible en: http://" + ip_str);
+        display_oled_message_3_line("v" + String(FIRMWARE_VERSION), "IP: " + ip_str, "OTA disponible");
+        delay(3000);
+        Serial.println("[SETUP] Iniciando OTA en background...");
+        Serial.flush();
+        init_ota_background();
+        delay(500);
+        if (is_ota_active()) Serial.println("[SETUP] ✓ OTA iniciado correctamente"); else Serial.println("[SETUP] ✗ ERROR: OTA no se inició");
+      }
+      else
+      {
+        Serial.println("[SETUP] ✗ Error: WiFi no disponible (status: " + String(WiFi.status()) + ")");
+        display_oled_message_3_line("v" + String(FIRMWARE_VERSION), "Modo sin", "conexión");
+        delay(1500);
+      }
+
       display_oled_message_3_line(
         "Inicio de modo",
         "funcionamiento",
@@ -249,20 +242,16 @@ void setup()
           }
         }
 
-        // 2) Revisar doble click para cambiar a Normal
+        // 2) Revisar doble click: en lugar de cambiar a modo bateria, entrar en AP de configuración
         if (nonBlockingDoubleClickDetected(800))
         {
-          // Guardar modo en NVS para persistencia
-          saveModeToNVS(MODE_NORMAL);
-          current_mode = MODE_NORMAL;
-
-          // Evitar re-lecturas por rebotes: esperar a que suelte el botón
-          while (digitalRead(PRG_BUTTON_PIN) == LOW) delay(10);
-          delay(300);
-
-          display_oled_message_3_line("Cambiando a", "modo", "Normal");
-          delay(700);
-          esp_restart();
+          Serial.println("[CONTINUOUS] Doble click detectado: borrando credenciales y entrando en AP de configuración...");
+          display_oled_message_3_line("Formateando", "y entrando", "modo AP...");
+          // Borrar credenciales para dejar el dispositivo 'formateado'
+          erase_wifi_credentials();
+          delay(200);
+          // Iniciar portal de configuración (bloqueante)
+          start_config_ap();
         }
 
         // 3) Actualizar temperatura y humedad cada 5s
@@ -288,43 +277,22 @@ void setup()
       );
       delay(1000);
 
-      // Permitir al usuario cambiar a modo continuo desde arranque con doble click
+      // Permitir al usuario entrar en modo AP con doble click (formatear)
       int initialPresses = countButtonPressesWithinWindow(3000);
       if (initialPresses >= 2)
       {
-        saveModeToNVS(MODE_CONTINUOUS);
-        current_mode = MODE_CONTINUOUS;
-
-        // Esperar a que se suelte el botón y evitar rebotes
-        while (digitalRead(PRG_BUTTON_PIN) == LOW) delay(10);
-        delay(300);
-
-        display_oled_message_3_line("Cambiando a", "modo", "Continuo");
-        delay(700);
-        esp_restart();
-      }
-      else if (initialPresses == 1)
-      {
-        // Esperar si viene un segundo click para confirmar doble
-        if (countButtonPressesWithinWindow(1000) >= 1)
-        {
-          saveModeToNVS(MODE_CONTINUOUS);
-          current_mode = MODE_CONTINUOUS;
-
-          while (digitalRead(PRG_BUTTON_PIN) == LOW) delay(10);
-          delay(300);
-
-          display_oled_message_3_line("Cambiando a", "modo", "Continuo");
-          delay(700);
-          esp_restart();
-        }
+        Serial.println("[NORMAL] Doble click detectado en modo NORMAL: borrando credenciales y entrando en AP...");
+        display_oled_message_3_line("Formateando", "y entrando", "modo AP...");
+        erase_wifi_credentials();
+        delay(200);
+        start_config_ap();
       }
     }
   }
   else if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) 
   {
-    //  Se configura la conexión a la red Wi-Fi.
-    set_wifi_connection();
+    //  Intentar conexión a la red Wi-Fi usando credenciales guardadas (no lanzar AP)
+    bool wifi_ok = try_connect_wifi_no_ap();
     
     //  Se obtienen los valores de Temperatura, Humedad y Bateria.
     get_temperature_humidity();
@@ -334,40 +302,18 @@ void setup()
       isnan(humidity) ? "--.-%" : String(humidity, 1) + "%"
     );
 
-    // Permitir interacción vía botón PRG: una pulsación para "despertar" y doble para cambiar a modo continuo
+    // Permitir interacción vía botón PRG: una pulsación para "despertar" y doble para entrar en AP (formatear)
     int presses = countButtonPressesWithinWindow(3000); // 3s ventana para detectar interacción
     if (presses >= 2)
     {
-      // Doble click inmediato -> cambiar a modo continuo (persistente en NVS)
-      saveModeToNVS(MODE_CONTINUOUS);
-      current_mode = MODE_CONTINUOUS;
-
-      while (digitalRead(PRG_BUTTON_PIN) == LOW) delay(10);
-      delay(300);
-
-      display_oled_message_3_line("Cambiando a", "modo", "Continuo");
-      delay(700);
-      esp_restart();
-    }
-    else if (presses == 1)
-    {
-      // Pulsación simple: esperar una segunda pulsación corta para confirmar doble click
-      if (countButtonPressesWithinWindow(1000) >= 1)
-      {
-        saveModeToNVS(MODE_CONTINUOUS);
-        current_mode = MODE_CONTINUOUS;
-
-        while (digitalRead(PRG_BUTTON_PIN) == LOW) delay(10);
-        delay(300);
-
-        display_oled_message_3_line("Cambiando a", "modo", "Continuo");
-        delay(700);
-        esp_restart();
-      }
-      // Si no hay doble click, continuar con flujo normal
+      Serial.println("[TIMER_WAKE] Doble click detectado: borrando credenciales y entrando en AP de configuración...");
+      display_oled_message_3_line("Formateando", "y entrando", "modo AP...");
+      erase_wifi_credentials();
+      delay(200);
+      start_config_ap();
     }
 
-    if (WiFi.status() == WL_CONNECTED)
+    if (wifi_ok && WiFi.status() == WL_CONNECTED)
     {
       //  Se extrae la hora actual antes de entrar en el modo DeepSleep
       time_t current_time = get_time_NTP();
@@ -396,8 +342,8 @@ void setup()
     
     if (door_state == true)
     {
-      //  Se configura la conexión a la red Wi-Fi
-      set_wifi_connection();
+      //  Intentar conexión a la red Wi-Fi usando credenciales guardadas (no lanzar AP)
+      bool wifi_ok = try_connect_wifi_no_ap();
 
       get_battery_status();
       int door_state_val = (digitalRead(DOOR_SENSOR_PIN) == true) ? 1 : 0;
@@ -407,7 +353,7 @@ void setup()
         door_state_tag
       );
 
-      if (WiFi.status() == WL_CONNECTED)
+      if (wifi_ok && WiFi.status() == WL_CONNECTED)
       {
         //  Se extrae la hora actual antes de entrar en el modo DeepSleep
         time_t wakeup_time = get_time_NTP();
