@@ -4,6 +4,7 @@
 #include "wifi_utils.h"
 #include "button_utils.h"
 #include "images.h"
+#include "logo_base64.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ElegantOTA.h>
@@ -67,6 +68,66 @@ static size_t base64_decode(const char* src, uint8_t* out) {
   }
   return out_len;
 }
+
+// Return pointer to embedded Base64 image by name (currently only "logo")
+const char* get_image_base64(const char* name)
+{
+  if (!name) return NULL;
+  if (strcmp(name, "logo") == 0) return logo_base64;
+  return "";
+}
+
+// --- Simple JSON-like extractor (no ArduinoJson) ---
+static String extract_json_value(const String &body, const char *key)
+{
+  String k = String("\"") + key + String("\"");
+  int idx = body.indexOf(k);
+  if (idx < 0) return String();
+  int colon = body.indexOf(':', idx);
+  if (colon < 0) return String();
+  int start = body.indexOf('"', colon);
+  if (start < 0) return String();
+  start++; // after opening quote
+  int end = body.indexOf('"', start);
+  if (end < 0) return String();
+  return body.substring(start, end);
+}
+
+// --- Auth helpers using Preferences ---
+static void auth_ensure_defaults()
+{
+  Preferences auth;
+  auth.begin("ota_auth", false);
+  String u = auth.getString("user", "");
+  if (u.length() == 0) {
+    auth.putString("user", "Telemetry");
+    auth.putString("pass", "Colombia123");
+    Serial.println("[OTA][AUTH] Defaults stored");
+  }
+  auth.end();
+}
+
+static bool auth_check_credentials(const String &user, const String &pass)
+{
+  Preferences auth;
+  auth.begin("ota_auth", true);
+  String su = auth.getString("user", "Telemetry");
+  String sp = auth.getString("pass", "Colombia123");
+  auth.end();
+  return (user == su && pass == sp);
+}
+
+static bool auth_set_credentials(const String &user, const String &pass)
+{
+  Preferences auth;
+  auth.begin("ota_auth", false);
+  auth.putString("user", user);
+  auth.putString("pass", pass);
+  auth.end();
+  Serial.println("[OTA][AUTH] Credentials updated");
+  return true;
+}
+
 
 // HTML embebido para la interfaz OTA (modificado: añadida sección de Device Info y fetch a /update/device_info)
 const char* ota_html = R"rawliteral(
@@ -518,6 +579,22 @@ const char* ota_html = R"rawliteral(
   </style>
 </head>
 <body>
+  <!-- Auth modal overlay: blocks UI until successful login -->
+  <div id="authOverlay" style="position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,0.75);display:flex;align-items:flex-start;justify-content:center;padding-top:60px;z-index:9999;">
+    <div style="background:#121212;padding:22px;border-radius:10px;max-width:420px;width:95%;box-shadow:0 12px 40px rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.03);">
+      <h3 style="color:var(--accent);margin-bottom:8px;text-align:center">Acceso Restringido</h3>
+      <p style="color:rgba(255,255,255,0.8);font-size:13px;margin-bottom:12px;text-align:center">Ingrese credenciales para acceder a la interfaz OTA</p>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <input id="authUser" placeholder="Usuario" style="padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:#0f0f0f;color:#fff" />
+        <input id="authPass" type="password" placeholder="Contraseña" style="padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:#0f0f0f;color:#fff" />
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:6px;">
+          <button id="authBtn" style="padding:10px 16px;border-radius:8px;background:var(--accent);color:#fff;border:none;font-weight:700;">Ingresar</button>
+        </div>
+        <div id="authMsg" style="color:#ffb3b3;font-size:13px;text-align:center;display:none;margin-top:6px;"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="container">
     <div class="header">
       <h1><img id="logo" src="__LOGO__" alt="MOE"><br>MOE Telemetry</h1>
@@ -611,6 +688,23 @@ const char* ota_html = R"rawliteral(
         
 
         <!-- Logo upload removed: using LittleFS /logo.png or embedded image fallback -->
+      <div style="margin-top:14px;margin-bottom:14px;">
+        <button id="changeCredBtn" style="width:100%;padding:12px;border-radius:8px;background:#2b2b2b;color:#fff;border:1px solid rgba(255,255,255,0.03);font-weight:700;">Cambiar credenciales de acceso</button>
+        <div id="changeCredForm" style="display:none;margin-top:12px;padding:12px;border-radius:8px;background:rgba(255,255,255,0.02);">
+          <label style="font-size:13px;color:rgba(255,255,255,0.8);">Usuario</label>
+          <input id="newUser" placeholder="Nuevo usuario (opcional)" style="width:100%;padding:8px;margin-top:6px;border-radius:6px;background:#0f0f0f;border:1px solid rgba(255,255,255,0.04);color:#fff" />
+          <label style="font-size:13px;color:rgba(255,255,255,0.8);margin-top:8px;display:block;">Contraseña actual</label>
+          <input id="currentPass" type="password" placeholder="Contraseña actual" style="width:100%;padding:8px;margin-top:6px;border-radius:6px;background:#0f0f0f;border:1px solid rgba(255,255,255,0.04);color:#fff" />
+          <label style="font-size:13px;color:rgba(255,255,255,0.8);margin-top:8px;display:block;">Nueva contraseña</label>
+          <input id="newPass" type="password" placeholder="Nueva contraseña" style="width:100%;padding:8px;margin-top:6px;border-radius:6px;background:#0f0f0f;border:1px solid rgba(255,255,255,0.04);color:#fff" />
+          <label style="font-size:13px;color:rgba(255,255,255,0.8);margin-top:8px;display:block;">Confirmar nueva contraseña</label>
+          <input id="confirmPass" type="password" placeholder="Confirmar nueva contraseña" style="width:100%;padding:8px;margin-top:6px;border-radius:6px;background:#0f0f0f;border:1px solid rgba(255,255,255,0.04);color:#fff" />
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">
+            <button id="confirmCredBtn" style="padding:10px 14px;border-radius:8px;background:var(--accent);color:#fff;border:none;font-weight:700;">Confirmar cambios</button>
+          </div>
+          <div id="credMsg" style="display:none;color:#ffb3b3;margin-top:8px;font-size:13px;text-align:center"></div>
+        </div>
+      </div>
       
       <div class="button-group">
         <button id="uploadBtn" disabled>Iniciar Actualización</button>
@@ -664,138 +758,199 @@ const char* ota_html = R"rawliteral(
     // continuousNote removed
     // logo upload controls removed
 
-    // Obtener versión del dispositivo
-    fetch('/update/identity')
-      .then(r => r.json())
-      .then(data => {
-        if (data.version) {
-          deviceVersion.textContent = `v${data.version}`;
-        }
-      })
-      .catch(() => {
-        deviceVersion.textContent = 'Versión desconocida';
-      });
-
-    // Obtener información del dispositivo (métricas + red)
-    function fetchDeviceInfo() {
-      fetch('/update/device_info')
+    // Authentication flow: block UI until successful login
+    function initAuthenticatedUI() {
+      // Obtener versión del dispositivo
+      fetch('/update/identity')
         .then(r => r.json())
         .then(data => {
-          if (data.temperature !== undefined && data.temperature !== null) {
-            deviceTemp.textContent = `${data.temperature.toFixed(1)} °C`;
-          } else {
-            deviceTemp.textContent = '--.-°C';
+          if (data.version) {
+            deviceVersion.textContent = `v${data.version}`;
           }
-
-          if (data.humidity !== undefined && data.humidity !== null) {
-            deviceHumidity.textContent = `${data.humidity.toFixed(1)} %`;
-          } else {
-            deviceHumidity.textContent = '--.-%';
-          }
-
-                // Battery information intentionally hidden in this UI; switch controls mode
-
-          if (data.door !== undefined && data.door !== null) {
-            deviceDoor.textContent = data.door == 1 ? 'Abierta' : 'Cerrada';
-          } else {
-            deviceDoor.textContent = '--';
-          }
-
-          if (data.ip) deviceIP.textContent = data.ip; else deviceIP.textContent = '--';
-          if (data.mac) deviceMAC.textContent = data.mac; else deviceMAC.textContent = '--';
-
-          if (data.ssid) deviceSSID.textContent = data.ssid; else deviceSSID.textContent = '--';
-          if (data.rssi !== undefined && data.rssi !== null) deviceRSSI.textContent = `${data.rssi} dBm`; else deviceRSSI.textContent = '-- dBm';
-          // After updating device info, refresh mode UI (depends on battery presence)
-          fetchMode();
         })
-        .catch(err => {
-          console.warn('fetchDeviceInfo failed', err);
+        .catch(() => {
+          deviceVersion.textContent = 'Versión desconocida';
         });
+
+      // Obtener información del dispositivo (métricas + red)
+      function fetchDeviceInfo() {
+        fetch('/update/device_info')
+          .then(r => r.json())
+          .then(data => {
+            if (data.temperature !== undefined && data.temperature !== null) {
+              deviceTemp.textContent = `${data.temperature.toFixed(1)} °C`;
+            } else {
+              deviceTemp.textContent = '--.-°C';
+            }
+
+            if (data.humidity !== undefined && data.humidity !== null) {
+              deviceHumidity.textContent = `${data.humidity.toFixed(1)} %`;
+            } else {
+              deviceHumidity.textContent = '--.-%';
+            }
+
+            if (data.door !== undefined && data.door !== null) {
+              deviceDoor.textContent = data.door == 1 ? 'Abierta' : 'Cerrada';
+            } else {
+              deviceDoor.textContent = '--';
+            }
+
+            if (data.ip) deviceIP.textContent = data.ip; else deviceIP.textContent = '--';
+            if (data.mac) deviceMAC.textContent = data.mac; else deviceMAC.textContent = '--';
+
+            if (data.ssid) deviceSSID.textContent = data.ssid; else deviceSSID.textContent = '--';
+            if (data.rssi !== undefined && data.rssi !== null) deviceRSSI.textContent = `${data.rssi} dBm`; else deviceRSSI.textContent = '-- dBm';
+            // After updating device info, refresh mode UI (depends on battery presence)
+            fetchMode();
+          })
+          .catch(err => {
+            console.warn('fetchDeviceInfo failed', err);
+          });
+      }
+
+      // Fetch current persistent mode and update switch
+      function fetchMode() {
+        fetch('/update/mode')
+          .then(r => r.json())
+          .then(m => {
+            // UI mapping: switch ON -> Normal mode enabled
+            batterySwitch.checked = !!m.normal;
+            if (batterySwitch.checked) {
+              batterySwitchWrap.classList.add('checked');
+              // If Normal mode is active, disable switch and show note
+              batterySwitch.disabled = true;
+              batterySwitchWrap.style.opacity = '0.6';
+            } else {
+              batterySwitchWrap.classList.remove('checked');
+              batterySwitch.disabled = false;
+              batterySwitchWrap.style.opacity = '1';
+            }
+          })
+          .catch(err => { console.warn('fetchMode failed', err); });
+      }
+
+      batterySwitch.addEventListener('change', () => {
+        // UI mapping: switch ON -> request enabling Normal mode
+        const wantNormal = !!batterySwitch.checked;
+        // update visual wrapper immediately for snappy UI
+        if (batterySwitch.checked) batterySwitchWrap.classList.add('checked'); else batterySwitchWrap.classList.remove('checked');
+
+        if (wantNormal) {
+          if (!confirm('El dispositivo entrará en modo ahorro de energía. Para volver a modo continuo deberá hacerlo físicamente. ¿Continuar?')) {
+            fetchMode();
+            return;
+          }
+          fetch('/update/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ normal: true }) })
+            .then(r => r.json())
+            .then(j => {
+              // After setting Normal, disable switch (revert requires physical reset)
+              batterySwitch.checked = !!j.normal;
+              batterySwitch.disabled = true;
+              batterySwitchWrap.style.opacity = '0.6';
+              alert('Modo Normal activado. Para volver a Modo Continuo reinicie físicamente el dispositivo.');
+            })
+            .catch(err => { console.warn('set mode failed', err); fetchMode(); });
+        } else {
+          // Trying to unset via OTA is not allowed: refresh state and inform
+          alert('La reversión a Modo Continuo no está permitida desde OTA. Por favor realice un reinicio físico para volver a Modo Continuo.');
+          fetchMode();
+        }
+      });
+
+      // Inicializar datos y refrescar periódicamente
+      fetchDeviceInfo();
+      setInterval(fetchDeviceInfo, 5000);
+
+      // Interval select: poblar opciones y sincronizar con servidor
+      function populateIntervalOptions() {
+        intervalSelect.innerHTML = '';
+        for (let i = 1; i <= 10; i++) {
+          const opt = document.createElement('option'); opt.value = i; opt.textContent = `${i} minuto${i>1? 's':''}`; intervalSelect.appendChild(opt);
+        }
+        for (let t = 20; t <= 60; t += 10) {
+          const opt = document.createElement('option'); opt.value = t; opt.textContent = `${t} minutos`; intervalSelect.appendChild(opt);
+        }
+      }
+
+      function fetchInterval() {
+        fetch('/update/interval').then(r=>r.json()).then(j=>{
+          if (j.interval) {
+            intervalSelect.value = j.interval;
+          }
+        }).catch(()=>{});
+      }
+
+      intervalSelect.addEventListener('change', ()=>{
+        const v = parseInt(intervalSelect.value);
+        fetch('/update/interval', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ interval: v }) })
+          .then(r => r.json()).then(j => {
+            // success
+          }).catch(()=>{ alert('Error guardando intervalo'); });
+      });
+
+      populateIntervalOptions();
+      fetchInterval();
     }
 
-    // Fetch current persistent mode and update switch
-    function fetchMode() {
-      fetch('/update/mode')
-        .then(r => r.json())
-        .then(m => {
-          // UI mapping: switch ON -> Normal mode enabled
-          batterySwitch.checked = !!m.normal;
-          if (batterySwitch.checked) {
-            batterySwitchWrap.classList.add('checked');
-            // If Normal mode is active, disable switch and show note
-            batterySwitch.disabled = true;
-            batterySwitchWrap.style.opacity = '0.6';
+    // Attach auth modal handlers and initialize only after successful login
+    const authOverlay = document.getElementById('authOverlay');
+    const authBtn = document.getElementById('authBtn');
+    const authUser = document.getElementById('authUser');
+    const authPass = document.getElementById('authPass');
+    const authMsg = document.getElementById('authMsg');
+
+    function doLogin() {
+      const payload = { username: authUser.value || '', password: authPass.value || '' };
+      fetch('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+        .then(r => r.json().catch(() => { return { ok: false }; }))
+        .then(j => {
+          if (j && j.ok) {
+            authOverlay.style.display = 'none';
+            initAuthenticatedUI();
           } else {
-            batterySwitchWrap.classList.remove('checked');
-            batterySwitch.disabled = false;
-            batterySwitchWrap.style.opacity = '1';
+            authMsg.style.display = 'block'; authMsg.textContent = 'Usuario o contraseña incorrectos';
           }
         })
-        .catch(err => { console.warn('fetchMode failed', err); });
+        .catch(() => { authMsg.style.display = 'block'; authMsg.textContent = 'Error autenticando'; });
     }
 
-    batterySwitch.addEventListener('change', () => {
-      // UI mapping: switch ON -> request enabling Normal mode
-      const wantNormal = !!batterySwitch.checked;
-      // update visual wrapper immediately for snappy UI
-      if (batterySwitch.checked) batterySwitchWrap.classList.add('checked'); else batterySwitchWrap.classList.remove('checked');
+    authBtn.addEventListener('click', doLogin);
+    authPass.addEventListener('keyup', (e)=>{ if (e.key === 'Enter') doLogin(); });
 
-      if (wantNormal) {
-        if (!confirm('El dispositivo entrará en modo ahorro de energía. Para volver a modo continuo deberá hacerlo físicamente. ¿Continuar?')) {
-          fetchMode();
-          return;
-        }
-        fetch('/update/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ normal: true }) })
-          .then(r => r.json())
-          .then(j => {
-            // After setting Normal, disable switch (revert requires physical reset)
-            batterySwitch.checked = !!j.normal;
-            batterySwitch.disabled = true;
-            batterySwitchWrap.style.opacity = '0.6';
-            alert('Modo Normal activado. Para volver a Modo Continuo reinicie físicamente el dispositivo.');
-          })
-          .catch(err => { console.warn('set mode failed', err); fetchMode(); });
-      } else {
-        // Trying to unset via OTA is not allowed: refresh state and inform
-        alert('La reversión a Modo Continuo no está permitida desde OTA. Por favor realice un reinicio físico para volver a Modo Continuo.');
-        fetchMode();
-      }
+    // Toggle and submit change credentials form
+    const changeCredBtn = document.getElementById('changeCredBtn');
+    const changeCredForm = document.getElementById('changeCredForm');
+    const confirmCredBtn = document.getElementById('confirmCredBtn');
+    const newUser = document.getElementById('newUser');
+    const currentPass = document.getElementById('currentPass');
+    const newPass = document.getElementById('newPass');
+    const confirmPass = document.getElementById('confirmPass');
+    const credMsg = document.getElementById('credMsg');
+
+    changeCredBtn.addEventListener('click', () => {
+      changeCredForm.style.display = (changeCredForm.style.display === 'none') ? 'block' : 'none';
     });
 
-    // Inicializar datos y refrescar periódicamente
-    fetchDeviceInfo();
-    setInterval(fetchDeviceInfo, 5000);
-
-    // Interval select: poblar opciones y sincronizar con servidor
-    function populateIntervalOptions() {
-      intervalSelect.innerHTML = '';
-      for (let i = 1; i <= 10; i++) {
-        const opt = document.createElement('option'); opt.value = i; opt.textContent = `${i} minuto${i>1? 's':''}`; intervalSelect.appendChild(opt);
-      }
-      for (let t = 20; t <= 60; t += 10) {
-        const opt = document.createElement('option'); opt.value = t; opt.textContent = `${t} minutos`; intervalSelect.appendChild(opt);
-      }
-    }
-
-    function fetchInterval() {
-      fetch('/update/interval').then(r=>r.json()).then(j=>{
-        if (j.interval) {
-          intervalSelect.value = j.interval;
-        }
-      }).catch(()=>{});
-    }
-
-    intervalSelect.addEventListener('change', ()=>{
-      const v = parseInt(intervalSelect.value);
-      fetch('/update/interval', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ interval: v }) })
-        .then(r => r.json()).then(j => {
-          // success
-        }).catch(()=>{ alert('Error guardando intervalo'); });
+    confirmCredBtn.addEventListener('click', () => {
+      credMsg.style.display = 'none';
+      const payload = {
+        username: newUser.value || '',
+        current_password: currentPass.value || '',
+        new_password: newPass.value || '',
+        confirm_password: confirmPass.value || ''
+      };
+      fetch('/auth/change', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+        .then(r => r.json())
+        .then(j => {
+          if (j.ok) {
+                alert('Credenciales actualizadas con éxito. La página se recargará para volver a iniciar sesión.');
+                window.location.reload();
+              } else {
+            credMsg.style.display = 'block'; credMsg.textContent = j.error || 'Error al cambiar credenciales';
+          }
+        })
+        .catch(() => { credMsg.style.display = 'block'; credMsg.textContent = 'Error comunicándose con el dispositivo'; });
     });
-
-    populateIntervalOptions();
-    fetchInterval();
 
     // Factory reset desde UI OTA (footer) con confirmación modal ligera
     factoryBtn.addEventListener('click', () => {
@@ -1082,6 +1237,84 @@ void ota_background_task(void *parameter)
     server.send(200, "application/json", json);
   });
 
+  // GET /telemetry -> devuelve solo temperatura, humedad y MAC
+  server.on("/telemetry", HTTP_GET, []() {
+    String json = "{";
+    if (isnan(ota_temp_c)) {
+      json += "\"temperature\":null";
+    } else {
+      json += "\"temperature\":" + String(ota_temp_c, 1);
+    }
+    if (isnan(ota_humidity_pct)) {
+      json += ",\"humidity\":null";
+    } else {
+      json += ",\"humidity\":" + String(ota_humidity_pct, 1);
+    }
+    // Añadir MAC del dispositivo
+    json += ",\"mac\":\"" + WiFi.macAddress() + "\"";
+    json += "}";
+    server.send(200, "application/json", json);
+  });
+
+  // --- Authentication endpoints ---
+  // POST /auth/login -> {"username":"...","password":"..."}
+  server.on("/auth/login", HTTP_POST, []() {
+    String body = server.arg("plain");
+    Serial.println("[OTA][AUTH] /auth/login body: " + body);
+    String u = extract_json_value(body, "username");
+    String p = extract_json_value(body, "password");
+    // Log masked values for debugging
+    Serial.println(String("[OTA][AUTH] login try user='") + u + "' pass_len=" + String(p.length()));
+    Preferences auth;
+    auth.begin("ota_auth", true);
+    String su = auth.getString("user", "Telemetry");
+    String sp = auth.getString("pass", "Colombia123");
+    auth.end();
+    Serial.println(String("[OTA][AUTH] stored user='") + su + "' stored_pass_len=" + String(sp.length()));
+    if (auth_check_credentials(u, p)) {
+      server.send(200, "application/json", "{\"ok\":true}");
+    } else {
+      server.send(401, "application/json", "{\"ok\":false}");
+    }
+  });
+
+  // GET /auth/user -> devuelve el usuario actual (no devuelve la contraseña)
+  server.on("/auth/user", HTTP_GET, []() {
+    Preferences auth;
+    auth.begin("ota_auth", true);
+    String u = auth.getString("user", "Telemetry");
+    auth.end();
+    String js = String("{\"user\":\"") + u + String("\"}");
+    server.send(200, "application/json", js);
+  });
+
+  // POST /auth/change -> cambiar usuario/clave
+  // body: {"username":"newUser","current_password":"cur","new_password":"new","confirm_password":"new"}
+  server.on("/auth/change", HTTP_POST, []() {
+    String body = server.arg("plain");
+    String newUser = extract_json_value(body, "username");
+    String cur = extract_json_value(body, "current_password");
+    String np = extract_json_value(body, "new_password");
+    String cp = extract_json_value(body, "confirm_password");
+    if (np.length() == 0 || np != cp) {
+      server.send(400, "application/json", "{\"ok\":false,\"error\":\"password_mismatch\"}");
+      return;
+    }
+    // verify current password against stored credentials
+    Preferences authR;
+    authR.begin("ota_auth", true);
+    String storedUser = authR.getString("user", "Telemetry");
+    authR.end();
+    if (!auth_check_credentials(storedUser, cur)) {
+      server.send(403, "application/json", "{\"ok\":false,\"error\":\"invalid_current\"}");
+      return;
+    }
+    // set username to provided value or keep existing
+    String finalUser = newUser.length() ? newUser : storedUser;
+    auth_set_credentials(finalUser, np);
+    server.send(200, "application/json", "{\"ok\":true}");
+  });
+
   // POST /upload_logo -> recibir PNG y guardarlo en LittleFS
   server.on("/upload_logo", HTTP_POST, []() {
     // final handler: respond OK and trigger no restart
@@ -1155,6 +1388,12 @@ void ota_background_task(void *parameter)
   server.on("/factory_reset", HTTP_POST, []() {
     Serial.println("[OTA] POST /factory_reset recibido: borrando credenciales...");
     erase_wifi_credentials();
+    // Reset OTA auth credentials to defaults upon factory reset
+    Preferences auth;
+    auth.begin("ota_auth", false);
+    auth.putString("user", "Telemetry");
+    auth.putString("pass", "Colombia123");
+    auth.end();
     server.send(200, "text/plain", "OK");
     delay(200);
     ESP.restart();
@@ -1258,6 +1497,9 @@ void init_ota_background()
   ota_continuous_mode = ota_prefs.getBool("continuous", false);
   ota_prefs.end();
   Serial.printf("[OTA_INIT] continuous_mode=%s\n", ota_continuous_mode ? "true" : "false");
+
+  // Ensure auth defaults exist
+  auth_ensure_defaults();
 
   if (ota_task_handle == NULL && WiFi.status() == WL_CONNECTED)
   {
