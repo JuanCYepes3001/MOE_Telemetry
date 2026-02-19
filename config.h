@@ -70,5 +70,6 @@ extern String display_door_status;
 // RTC memory variables
 extern RTC_DATA_ATTR time_t deep_sleep_start_time;
 extern RTC_DATA_ATTR uint8_t current_mode; // Persistente: MODE_NORMAL o MODE_CONTINUOUS
+extern RTC_DATA_ATTR int last_door_state; // Estado previo de la puerta: -1=desconocido, 0=cerrada, 1=abierta
 
 #endif

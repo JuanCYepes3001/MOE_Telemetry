@@ -22,7 +22,7 @@ const char* password = "";                                                      
 const char* ntpServer = "172.30.19.65";                                                 //  Dirección IP del servidor NTP interno
 
 // Endpoints del servidor
-const String base_url = "https://172.30.19.97:5678/webhook";                            //  URL base del servidor
+const String base_url = "https://172.30.19.123:8000/webhook";                            //  URL base del servidor
 const String endpoint_telemetry = base_url + "/moe_telemetry/temperature_humidity";     //  Endpoint del servidor para registro de temperatura y humedad
 const String endpoint_door_sensor = base_url + "/moe_telemetry/door_status";            //  Endpoint del servidor para registro de apertura de puertas
 
@@ -47,3 +47,5 @@ String display_door_status = "Puerta: --";
 RTC_DATA_ATTR time_t deep_sleep_start_time = 0;
 // Por defecto iniciar en modo continuo. Persistente a través de deep sleep
 RTC_DATA_ATTR uint8_t current_mode = MODE_CONTINUOUS;
+// Estado previo de la puerta para detectar cambios
+RTC_DATA_ATTR int last_door_state = -1;

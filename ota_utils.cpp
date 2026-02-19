@@ -69,14 +69,6 @@ static size_t base64_decode(const char* src, uint8_t* out) {
   return out_len;
 }
 
-// Return pointer to embedded Base64 image by name (currently only "logo")
-const char* get_image_base64(const char* name)
-{
-  if (!name) return NULL;
-  if (strcmp(name, "logo") == 0) return logo_base64;
-  return "";
-}
-
 // --- Simple JSON-like extractor (no ArduinoJson) ---
 static String extract_json_value(const String &body, const char *key)
 {
@@ -597,7 +589,7 @@ const char* ota_html = R"rawliteral(
 
   <div class="container">
     <div class="header">
-      <h1><img id="logo" src="__LOGO__" alt="MOE"><br>MOE Telemetry</h1>
+      <h1><img id="logo" src="/logo.png" alt="MOE" onerror="this.style.display='none'"><br>MOE Telemetry</h1>
       <p>Gestor de Actualizaciones OTA</p>
       <div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-top:10px;">
         <div class="version-badge" id="deviceVersion">Conectando...</div>
@@ -1160,7 +1152,7 @@ void ota_background_task(void *parameter)
       return;
     }
     // Fallback: decode embedded Base64 and stream
-    const char* b64 = get_image_base64("logo");
+    const char* b64 = logo_base64;
     if (!b64 || b64[0] == '\0') {
       Serial.println("[OTA] /logo.png: no logo data");
       server.send(404, "text/plain", "no logo");

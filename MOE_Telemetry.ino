@@ -198,44 +198,53 @@ void setup()
       // Bucle continuo: mostrar Temp, Hum y Estado de Puerta con respuesta inmediata a cambios
       // Variables para muestreo no bloqueante
       unsigned long last_sensor_update = 0;
-      bool last_door_state = (digitalRead(DOOR_SENSOR_PIN) == true);
 
       // Lectura inicial
       get_temperature_humidity();
       get_battery_status();
       int initial_door = (digitalRead(DOOR_SENSOR_PIN) == true) ? 1 : 0;
+      last_door_state = initial_door; // Guardar estado inicial en RTC
       ota_set_device_metrics(temperature, humidity, battery_level, initial_door);
       display_door_status = last_door_state ? "Puerta:Abierta" : "Puerta:Cerrada";
       display_oled_message_3_line(display_temperature, display_humidity, display_door_status);
+      
+      Serial.printf("[CONTINUOUS] Estado inicial de puerta: %d\n", initial_door);
 
       while (true)
       {
         unsigned long now = millis();
 
         // 1) Revisar cambios en el sensor de puerta (respuesta inmediata)
-        bool door_state_now = (digitalRead(DOOR_SENSOR_PIN) == true);
+        int door_state_now = (digitalRead(DOOR_SENSOR_PIN) == true) ? 1 : 0;
         if (door_state_now != last_door_state)
         {
+          // Guardar el nuevo estado en memoria RTC
+          int previous_state = last_door_state;
           last_door_state = door_state_now;
+          
           display_door_status = door_state_now ? "Puerta:Abierta" : "Puerta:Cerrada";
           display_oled_message_3_line(display_temperature, display_humidity, display_door_status);
+
+          Serial.printf("[CONTINUOUS] Cambio detectado: puerta %d -> %d\n", previous_state, door_state_now);
 
           // En modo continuo: registrar interacción de puerta mediante POST
           // Actualizar estado de batería antes de enviar
           get_battery_status();
 
           // Actualizar métricas OTA inmediatamente (incluye estado de puerta)
-          int door_now = door_state_now ? 1 : 0;
-          ota_set_device_metrics(NAN, NAN, battery_level, door_now);
+          ota_set_device_metrics(NAN, NAN, battery_level, door_state_now);
 
           // Garantizar conexión WiFi antes de intentar el POST
           if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("[CONTINUOUS] Reconectando WiFi...");
             set_wifi_connection();
             delay(200); // breve espera a que la conexión se estabilice
           }
 
           if (WiFi.status() == WL_CONNECTED) {
-            send_POST_door_status_battery(int(door_state_now), battery_voltage, battery_level);
+            Serial.printf("[CONTINUOUS] Enviando POST: puerta=%d, batería=%dmV (%d%%)\n", 
+                          door_state_now, battery_voltage, battery_level);
+            send_POST_door_status_battery(door_state_now, battery_voltage, battery_level);
           } else {
             // Si no hay conexión, mostrar en serial
             Serial.println("[CONTINUOUS] No hay WiFi: no se pudo enviar POST de puerta");
@@ -336,18 +345,25 @@ void setup()
   }
   else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) 
   {
-    //El sensor envia LOW si los 2 imanes estan separados
-    int door_state = digitalRead(DOOR_SENSOR_PIN) == true;
-    String door_state_tag = door_state == true ? "ABIERTA" : "CERRADA";
+    // Leer el estado actual de la puerta
+    int door_state = digitalRead(DOOR_SENSOR_PIN) == true ? 1 : 0;
+    String door_state_tag = door_state == 1 ? "ABIERTA" : "CERRADA";
     
-    if (door_state == true)
+    // Verificar si hubo un cambio real de estado
+    bool state_changed = (last_door_state != door_state);
+    
+    Serial.println("[EXT0_WAKE] Despertar por cambio en sensor de puerta");
+    Serial.printf("[EXT0_WAKE] Estado anterior: %d, Estado actual: %d\n", last_door_state, door_state);
+    
+    // Enviar POST independientemente de si es apertura o cierre
+    // Solo si hubo un cambio real de estado (evitar duplicados)
+    if (state_changed || last_door_state == -1)
     {
       //  Intentar conexión a la red Wi-Fi usando credenciales guardadas (no lanzar AP)
       bool wifi_ok = try_connect_wifi_no_ap();
 
       get_battery_status();
-      int door_state_val = (digitalRead(DOOR_SENSOR_PIN) == true) ? 1 : 0;
-      ota_set_device_metrics(NAN, NAN, battery_level, door_state_val);
+      ota_set_device_metrics(NAN, NAN, battery_level, door_state);
       display_oled_message_2_line(
         "Puerta:",
         door_state_tag
@@ -359,12 +375,18 @@ void setup()
         time_t wakeup_time = get_time_NTP();
         update_deep_sleep_time(wakeup_time);
         
-        //  Se envian los valores de Apertura Puerta y Bateria.
-        send_POST_door_status_battery(int(door_state), battery_voltage, battery_level);
+        //  Se envian los valores de estado de puerta (0=cerrada, 1=abierta) y Bateria
+        Serial.printf("[EXT0_WAKE] Enviando POST: puerta=%d, batería=%dmV (%d%%)\n", 
+                      door_state, battery_voltage, battery_level);
+        send_POST_door_status_battery(door_state, battery_voltage, battery_level);
+        
+        // Guardar el estado actual para la próxima comparación
+        last_door_state = door_state;
       }
       else
       {
         // Si no hay conexión, mostrar mensaje de error
+        Serial.println("[EXT0_WAKE] Sin conexión WiFi - no se pudo enviar POST");
         display_oled_message_3_line(
           "Sin conexión", 
           "a la red", 
@@ -372,6 +394,15 @@ void setup()
         );
         delay(500);
       }
+    }
+    else
+    {
+      Serial.println("[EXT0_WAKE] Sin cambio de estado real, omitiendo envío");
+      display_oled_message_2_line(
+        "Puerta:",
+        door_state_tag
+      );
+      delay(500);
     }
   }
   else 
